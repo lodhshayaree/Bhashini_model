@@ -1,3 +1,5 @@
+
+
 import streamlit as st
 from bhashini_api import bhashini_tts, bhashini_nmt, bhashini_asr, bhashini_asr_nmt_tts_pipeline, bhashini_asr_nmt # Import new function
 from utils import play_audio_from_base64, recognize_speech_and_encode
@@ -5,7 +7,8 @@ import base64 # Needed for potential direct base64 audio handling
 
 st.set_page_config(page_title="Bhashini Assistant", layout="centered")
 st.title("🇮🇳 Bhashini Multilingual Voice Assistant")
-
+with open("custom_streamlit_style.css") as f:
+    st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 option = st.selectbox("Choose a task", [
     "Text to Speech",
     "Speech to Text",
