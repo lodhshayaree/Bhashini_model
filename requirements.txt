@@ -1,0 +1,9 @@
+streamlit
+python-dotenv
+sounddevice
+soundfile
+numpy
+scipy
+requests
+pydub
+speechrecognition

@@ -1,0 +1,63 @@
+<style>
+/* Base background and text */
+html, .main {
+    background-color: #1e0330;
+    color: #FFFFFF;
+    font-family: 'Segoe UI', sans-serif;
+}
+
+/* Title Styling */
+h1 {
+    color: #00FFAA;
+    text-align: center;
+}
+
+/* Inputs */
+input[type="text"], input[type="number"], textarea {
+    background-color: #12121b !important;
+    color: #00FFAA !important;
+    padding: 6px;
+}
+
+/* Buttons */
+button {
+    background-color: lch(64.81% 36.41 224.68) !important;
+    color: black !important;
+    font-weight: bold;
+    border-radius: 8px;
+    border: none;
+}
+
+/* Select boxes */
+.stSelectbox div {
+    background-color: #1f1f2e !important;
+    color: #FFFFFF !important;
+    
+}
+
+/* Alerts */
+.stAlert-success {
+    background-color: #004d40 !important;
+    color: #A7FFEB !important;
+}
+
+.stAlert-error {
+    background-color: #d30808 !important;
+    color: #FFCDD2 !important;
+}
+
+.stAlert-warning {
+    background-color: #7c4d00 !important;
+    color: #FFE0B2 !important;
+}
+
+.stAlert-info {
+    background-color: #1565C0 !important;
+    color: #BBDEFB !important;
+}
+
+/* Slider styling (fallback) */
+input[type="range"] {
+    accent-color: #00FFAA;
+}
+</style>
