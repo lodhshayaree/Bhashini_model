@@ -1,334 +1,324 @@
-import requests
-import json
+"""
+Unified helper module for Bhashini:
+    • ASR               (speech ➜ text)
+    • NMT               (text ↔ text)
+    • TTS               (text ➜ speech)
+    • NMT + TTS         (text ➜ text ➜ speech)
+    • ASR + NMT         (speech ➜ text ➜ text)
+    • ASR + NMT + TTS   (speech ➜ text ➜ text ➜ speech)
+"""
+
 import os
+import json
 import base64
-from dotenv import load_dotenv
 from collections import defaultdict
-from pydub import AudioSegment  # Ensure pydub is installed
 from io import BytesIO
 
-from language_utils import get_script_code
-
-
-
-# Load environment variables
+import requests
+from dotenv import load_dotenv
+from pydub import AudioSegment   # pip install pydub
+# ──────────────────────────────────────────────────────────────────────────────
+#  Environment & constants
+# ──────────────────────────────────────────────────────────────────────────────
 load_dotenv()
 
-# Get credentials and URL from environment
-ULCA_USER_ID = os.getenv("ULCA_USER_ID")
-ULCA_API_KEY = os.getenv("ULCA_API_KEY")
-BHASHINI_AUTH_TOKEN = os.getenv("BHASHINI_AUTH_TOKEN")
-BHASHINI_PIPELINE_URL = os.getenv("BHASHINI_PIPELINE_URL")
+ULCA_USER_ID         = os.getenv("ULCA_USER_ID")
+ULCA_API_KEY         = os.getenv("ULCA_API_KEY")
+BHASHINI_AUTH_TOKEN  = os.getenv("BHASHINI_AUTH_TOKEN")
+BHASHINI_PIPELINE_URL = os.getenv("BHASHINI_PIPELINE_URL")      # e.g.
+# https://dhruva-api.bhashini.gov.in/services/inference/pipeline
 
-# Check all necessary values exist
 if not all([ULCA_USER_ID, ULCA_API_KEY, BHASHINI_AUTH_TOKEN, BHASHINI_PIPELINE_URL]):
-    raise ValueError("Missing one or more Bhashini credentials or pipeline URL in .env file.")
+    raise EnvironmentError(
+        "❌  Missing one or more env vars: "
+        "ULCA_USER_ID, ULCA_API_KEY, BHASHINI_AUTH_TOKEN, BHASHINI_PIPELINE_URL"
+    )
 
 HEADERS = {
     "Content-Type": "application/json",
     "Accept": "*/*",
     "user_id": ULCA_USER_ID,
     "api-key": ULCA_API_KEY,
-    "Authorization": BHASHINI_AUTH_TOKEN
+    "Authorization": BHASHINI_AUTH_TOKEN,
 }
 
-# SCRIPT MAP for language codes to script codes
-SCRIPT_MAP = defaultdict(lambda: 'Latn')  # Default to Latin script
+# ──────────────────────────────────────────────────────────────────────────────
+#  Dynamic language‑to‑script map (falls back to Latin)
+# ──────────────────────────────────────────────────────────────────────────────
+SCRIPT_MAP = defaultdict(lambda: "Latn")
 
-def fetch_supported_languages():
+
+def _fetch_supported_languages() -> dict:
+    """Build {lang_code: script_code} from Bhashini registry."""
     url = "https://meity-auth.ulcacontrib.org/ulca/apis/v0/model/getModelsPipeline"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": BHASHINI_AUTH_TOKEN
-    }
-
     try:
-        response = requests.post(url, headers=headers, json={})
-        response.raise_for_status()
-        data = response.json()
-        language_map = {}
-        for pipeline in data.get('pipelineModels', []):
-            for lang in pipeline.get('languages', []):
-                lang_code = lang.get('sourceLanguage')
-                script_code = lang.get('sourceScriptCode')
+        rsp = requests.post(url, headers={"Authorization": BHASHINI_AUTH_TOKEN}, json={})
+        rsp.raise_for_status()
+        lang_map = {}
+        for pipe in rsp.json().get("pipelineModels", []):
+            for lang in pipe.get("languages", []):
+                lang_code   = lang.get("sourceLanguage")
+                script_code = lang.get("sourceScriptCode")
                 if lang_code and script_code:
-                    language_map[lang_code] = script_code
-        return language_map
-    except requests.RequestException as e:
-        print(f"⚠️ Failed to fetch script codes: {e}")
+                    lang_map[lang_code] = script_code
+        return lang_map
+    except Exception as err:
+        print(f"⚠️  Could not fetch language map: {err}")
         return {}
 
-# Load dynamic language-script map
-SCRIPT_MAP.update(fetch_supported_languages())
 
-def get_script_code(language_code):
-    return SCRIPT_MAP[language_code]
-
-def bhashini_pipeline_request(payload):
-    response = requests.post(
-        BHASHINI_PIPELINE_URL,  # must be 'https://dhruva-api.bhashini.gov.in/services/inference/pipeline'
-        headers=HEADERS,
-        json=payload  # use json=payload instead of data=json.dumps(payload) to automatically set content-type
-    )
-    response.raise_for_status()
-    return response.json()
-
-def bhashini_asr(audio_base64_string, source_language):
-    payload = {
-        "pipelineTasks": [{
-            "taskType": "asr",
-            "config": {
-                "serviceId": "ai4bharat/conformer-hi-gpu--t4",
-                "language": {
-                    "sourceLanguage": source_language
-                },
-                "audioFormat": "flac",
-                "samplingRate": 16000
-            }
-        }],
-        "inputData": {
-            "audio": [{"audioContent": audio_base64_string}]
-        }
-    }
-    response = bhashini_pipeline_request(payload)
-    for task in response.get('pipelineResponse', []):
-        if task['taskType'] == 'asr':
-            return task['output'][0]['source']
-    raise Exception("ASR failed.")
+SCRIPT_MAP.update(_fetch_supported_languages())
 
 
-def bhashini_nmt(text, source_lang, target_lang):
-    payload = {
-        "pipelineTasks": [{
-            "taskType": "translation",
-            "config": {
-                "serviceId": "ai4bharat/indictrans-v2-all-gpu--t4",
-                "language": {
-                    "sourceLanguage": source_lang,
-                    "targetLanguage": target_lang
-                }
-            }
-        }],
-        "inputData": {
-            "input": [{"source": text}]
-        }
-
-    }
-    response = bhashini_pipeline_request(payload)
-    for task in response.get('pipelineResponse', []):
-        if task['taskType'] == 'translation':
-            return task['output'][0]['target']
-    raise Exception("Translation failed.")
+def get_script_code(lang: str) -> str:
+    """Return ISO‑15924 script code; defaults to Latin."""
+    return SCRIPT_MAP[lang]
 
 
-def bhashini_tts(text, target_language, gender="female", save_to_file=False):
-    payload = {
-        "pipelineTasks": [{
-            "taskType": "tts",
-            "config": {
-                "serviceId": "ai4bharat/indic-tts-coqui-misc-gpu--t4",
-                "language": {
-                    "sourceLanguage": target_language
-                },
-                "gender": gender
-            }
-        }],
-        "inputData": {
-            "text": [{"source": text}]
-        }
-    }
-    response = bhashini_pipeline_request(payload)
-    for task in response.get('pipelineResponse', []):
-        if task['taskType'] == 'tts':
-            audio_base64 = task['output'][0].get('audioContent')
-            if audio_base64 and save_to_file:
-                try:
-                    audio_bytes = base64.b64decode(audio_base64)
-                    audio_segment = AudioSegment.from_file(BytesIO(audio_bytes), format="mp3")
-                    audio_segment.export("output_audio.mp3", format="mp3")
-                    print("✅ Audio saved to output_audio.mp3")
-                except Exception as e:
-                    print(f"⚠️ Failed to save audio: {e}")
-            return audio_base64
-    raise Exception("TTS failed.")
+# ──────────────────────────────────────────────────────────────────────────────
+#  Core wrapper
+# ──────────────────────────────────────────────────────────────────────────────
+def _pipeline_request(payload: dict) -> dict:
+    rsp = requests.post(BHASHINI_PIPELINE_URL, headers=HEADERS, json=payload, timeout=60)
+    rsp.raise_for_status()
+    return rsp.json()
 
-def bhashini_asr_nmt(audio_base64_string, source_language_asr, target_language_nmt):
+
+# ------------------------------------------------------------------------------
+#  Low‑level single‑task helpers
+# ------------------------------------------------------------------------------
+
+def bhashini_asr(audio_b64: str, language: str) -> str:
+    """Speech‑to‑Text."""
     payload = {
         "pipelineTasks": [
             {
                 "taskType": "asr",
                 "config": {
                     "serviceId": "ai4bharat/conformer-hi-gpu--t4",
-                    "modelId": "648025f27cdd753e77f461a9",
-                    "language": {
-                        "sourceLanguage": source_language_asr,
-                        "sourceScriptCode": get_script_code(source_language_asr)
-                    },
-                    "domain": ["general"],
-                    "audioFormat": "wav",
-                    "samplingRate": 16000
-                }
-            },
-            {
-                "taskType": "translation",
-                "config": {
-                    "serviceId": "ai4bharat/indictrans-v2-all-gpu--t4",
-                    "modelId": "641d1cd18ecee6735a1b372a",
-                    "language": {
-                        "sourceLanguage": source_language_asr,
-                        "sourceScriptCode": get_script_code(source_language_asr),
-                        "targetLanguage": target_language_nmt,
-                        "targetScriptCode": get_script_code(target_language_nmt)
-                    }
-                }
+                    "language": {"sourceLanguage": language},
+                    "audioFormat": "flac",
+                    "samplingRate": 16000,
+                },
             }
         ],
-        "inputData": {
-            "audio": [{"audioContent": audio_base64_string}]
-        }
+        "inputData": {"audio": [{"audioContent": audio_b64}]},
     }
-    response = bhashini_pipeline_request(payload)
-    for task in response.get('pipelineResponse', []):
-        if task['taskType'] == 'translation':
-            return task['output'][0]['target']
-    raise Exception("ASR-NMT failed.")
+    rsp = _pipeline_request(payload)
+    for task in rsp.get("pipelineResponse", []):
+        if task["taskType"] == "asr":
+            return task["output"][0]["source"]
+    raise RuntimeError("ASR failed: no transcription returned.")
 
-def bhashini_asr_nmt_tts_pipeline(audio_base64_string, source_language_asr, target_language_nmt_tts):
-    if source_language_asr == target_language_nmt_tts:
-        raise ValueError("Source and target languages must be different for translation.")
 
+def bhashini_nmt(text: str, src_lang: str, tgt_lang: str) -> str:
+    """Text‑to‑Text translation."""
     payload = {
         "pipelineTasks": [
-            {
-                "taskType": "asr",
-                "config": {
-                    "serviceId": "ai4bharat/conformer-hi-gpu--t4",
-                    "modelId": "648025f27cdd753e77f461a9",
-                    "language": {
-                        "sourceLanguage": source_language_asr,
-                        "sourceScriptCode": get_script_code(source_language_asr)
-                    },
-                    "domain": ["general"],
-                    "audioFormat": "wav",
-                    "samplingRate": 16000
-                }
-            },
             {
                 "taskType": "translation",
                 "config": {
                     "serviceId": "ai4bharat/indictrans-v2-all-gpu--t4",
-                    "modelId": "641d1cd18ecee6735a1b372a",
+                    "language": {"sourceLanguage": src_lang, "targetLanguage": tgt_lang},
+                },
+            }
+        ],
+        "inputData": {"input": [{"source": text}]},
+    }
+    rsp = _pipeline_request(payload)
+    for task in rsp.get("pipelineResponse", []):
+        if task["taskType"] == "translation":
+            return task["output"][0]["target"]
+    raise RuntimeError("Translation failed.")
+
+
+def bhashini_tts(text: str, language: str, gender: str = "female",
+                 save_to_file: bool = False) -> str:
+    """Text‑to‑Speech (same language)."""
+    if gender.lower() not in {"female", "male"}:
+        gender = "female"                    # safety default
+
+    payload = {
+        "pipelineTasks": [
+            {
+                "taskType": "translation",
+                "config": {
+                    "serviceId": "ai4bharat/indic-tts-coqui-misc-gpu--t4",
+                    "language": {"sourceLanguage": language},
+                    "gender": gender,
+                },
+            }
+        ],
+        "inputData": {"text": [{"source": text}]},
+    }
+    rsp = _pipeline_request(payload)
+    for task in rsp.get("pipelineResponse", []):
+        if task["taskType"] == "tts":
+            audio_b64 = task["output"][0]["audioContent"]
+            if save_to_file and audio_b64:
+                _save_mp3(audio_b64, "tts_output.mp3")
+            return audio_b64
+    raise RuntimeError("TTS failed. : no audioContent returned.")
+    
+
+
+
+
+def bhashini_nmt_tts(text: str, src_lang: str, tgt_lang: str) -> str:
+    """
+    Text → Translated Text → TTS Audio (Base64)
+    """
+    payload = {
+        "pipelineTasks": [
+            {
+                "taskType": "translation",
+                "config": {
                     "language": {
-                        "sourceLanguage": source_language_asr,
-                        "sourceScriptCode": get_script_code(source_language_asr),
-                        "targetLanguage": target_language_nmt_tts,
-                        "targetScriptCode": get_script_code(target_language_nmt_tts)
-                    }
+                        "sourceLanguage": src_lang,
+                        "targetLanguage": tgt_lang
+                    },
+                    "serviceId": "ai4bharat/indictrans-v2-all-gpu--t4"
                 }
             },
             {
                 "taskType": "tts",
                 "config": {
-                    "serviceId": "ai4bharat/indic-tts-coqui-misc-gpu--t4",
-                    "modelId": "63f7384c2ff3ab138f88c64e",
                     "language": {
-                        "sourceLanguage": target_language_nmt_tts,
-                        "sourceScriptCode": get_script_code(target_language_nmt_tts)
+                        "sourceLanguage": tgt_lang
                     },
-                    "gender": "female"
-                }
-            }
-        ],
-        "inputData": {
-            "audio": [{"audioContent": audio_base64_string}]
-        }
-    }
-
-    response = bhashini_pipeline_request(payload)
-
-    print("Full pipeline response:")
-    print(response)
-
-    if not response or 'pipelineResponse' not in response:
-        raise Exception("Invalid response from Bhashini pipeline.")
-
-    # Extract intermediate outputs for debugging
-    asr_text = None
-    translated_text = None
-    output_audio_base64 = None
-
-    for task in response['pipelineResponse']:
-        if task['taskType'] == 'asr':
-            output = task.get('output')
-            if output and isinstance(output, list):
-                asr_text = output[0].get('source')
-        elif task['taskType'] == 'translation':
-            output = task.get('output')
-            if output and isinstance(output, list):
-                translated_text = output[0].get('target')
-        elif task['taskType'] == 'tts':
-            output = task.get('output')
-            if output and isinstance(output, list):
-                output_audio_base64 = output[0].get('audioContent')
-
-    print(f"ASR Text: {asr_text}")
-    print(f"Translated Text: {translated_text}")
-
-    if not asr_text:
-        raise Exception("ASR failed: No transcription returned.")
-    if not translated_text:
-        raise Exception("Translation failed: No target text returned.")
-    if not output_audio_base64:
-        raise Exception("TTS failed: No audio content returned.")
-
-    return output_audio_base64
-
-# 2. ADD these two new functions at the bottom of your file:
-def get_pipeline_config(source_lang, target_lang, task_type):
-    url = f"{BHASHINI_PIPELINE_URL}/pipeline-config"
-    payload = {
-        "pipelineTasks": [
-            {
-                "taskType": task_type,
-                "config": {
-                    "language": {
-                        "sourceLanguage": source_lang,
-                        "targetLanguage": target_lang
-                    }
-                }
-            }
-        ],
-        "pipelineRequestConfig": {
-            "pipelineId": "64392f96daac500b55c543cd"  # working pipelineId
-        }
-    }
-    response = requests.post(url, headers=HEADERS, json=payload)
-    response.raise_for_status()
-    return response.json()
-
-
-def make_translation_pipeline_request(source_lang, target_lang, input_text, service_id):
-    payload = {
-        "pipelineTasks": [
-            {
-                "taskType": "translation",
-                "config": {
-                    "language": {
-                        "sourceLanguage": source_lang,
-                        "targetLanguage": target_lang
-                    },
-                    "serviceId": service_id  # You must pass this from outside
+                    "serviceId": "ai4bharat/indic-tts-coqui-ml--gpu",
+                    "gender": "female",
+                    "samplingRate": 8000
                 }
             }
         ],
         "inputData": {
             "input": [
                 {
-                    "source": input_text
+                    "source": text
                 }
             ]
         }
     }
 
-    return bhashini_pipeline_request(payload)
+    rsp = _pipeline_request(payload)
+    for task in rsp.get("pipelineResponse", []):
+        if task["taskType"] == "tts":
+            return task["audio"][0]["audioContent"]
+    raise RuntimeError("NMT+TTS failed: No audio content returned.")
 
+def bhashini_asr_nmt(audio_b64: str, src_asr_lang: str, tgt_lang: str) -> str:
+    """Speech → Text → Text."""
+    payload = {
+        "pipelineTasks": [
+            {
+                "taskType": "asr",
+                "config": {
+                    "serviceId": "ai4bharat/conformer-hi-gpu--t4",
+                    "language": {
+                        "sourceLanguage": src_asr_lang,
+                        "sourceScriptCode": get_script_code(src_asr_lang),
+                    },
+                    "audioFormat": "wav",
+                    "samplingRate": 16000,
+                },
+            },
+            {
+                "taskType": "translation",
+                "config": {
+                    "serviceId": "ai4bharat/indictrans-v2-all-gpu--t4",
+                    "language": {
+                        "sourceLanguage": src_asr_lang,
+                        "sourceScriptCode": get_script_code(src_asr_lang),
+                        "targetLanguage": tgt_lang,
+                        "targetScriptCode": get_script_code(tgt_lang),
+                    },
+                },
+            },
+        ],
+        "inputData": {"audio": [{"audioContent": audio_b64}]},
+    }
+
+    rsp = _pipeline_request(payload)
+    for task in rsp.get("pipelineResponse", []):
+        if task["taskType"] == "translation":
+            return task["output"][0]["target"]
+    raise RuntimeError("ASR+NMT failed.")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Composite helper: SPEECH ➜ TEXT ➜ TEXT ➜ SPEECH
+# ──────────────────────────────────────────────────────────────────────────────
+def bhashini_asr_nmt_tts(audio_b64: str, src_asr_lang: str,
+                         tgt_lang: str, gender: str = "female") -> str:
+    if src_asr_lang == tgt_lang:
+        raise ValueError("Source and target languages must differ for ASR+NMT+TTS")
+
+    payload = {
+        "pipelineTasks": [
+            {
+                "taskType": "asr",
+                "config": {
+                    "language": {
+                        "sourceLanguage": src_asr_lang,
+                        "sourceScriptCode": get_script_code(src_asr_lang),
+                    },
+                    "serviceId": "ai4bharat/conformer-hi-gpu--t4",
+                    "audioFormat": "flac",
+                    "samplingRate": 16000
+                }
+            },
+            {
+                "taskType": "translation",
+                "config": {
+                    "language": {
+                        "sourceLanguage": src_asr_lang,
+                        "sourceScriptCode": get_script_code(src_asr_lang),
+                        "targetLanguage": tgt_lang,
+                        "targetScriptCode": get_script_code(tgt_lang),
+                    },
+                    "serviceId": "ai4bharat/indictrans-v2-all-gpu--t4"
+                }
+            },
+            {
+                "taskType": "tts",
+                "config": {
+                    "language": {
+                        "sourceLanguage": tgt_lang,
+                        "sourceScriptCode": get_script_code(tgt_lang),
+                    },
+                    "serviceId": "ai4bharat/indic-tts-coqui-misc-gpu--t4",
+                    "gender": gender,
+                    "samplingRate": 8000
+                }
+            }
+        ],
+        "inputData": {
+            "audio": [{"audioContent": audio_b64}]
+        }
+    }
+
+    rsp = _pipeline_request(payload)
+
+    # ── Extract and log intermediate outputs for debugging ──
+    for task in rsp.get("pipelineResponse", []):
+        task_type = task.get("taskType", "unknown")
+        output = task.get("output", [])
+        if not output:
+            raise RuntimeError(f"{task_type.upper()} failed: no output returned")
+        if task_type == "tts":
+            audio_out = output[0].get("audioContent")
+            if not audio_out:
+                raise RuntimeError("TTS failed: audioContent missing")
+            return audio_out
+
+    raise RuntimeError("ASR+NMT+TTS failed: no audioContent returned.")
+
+# ------------------------------------------------------------------------------
+#  Utilities
+# ------------------------------------------------------------------------------
+
+def _save_mp3(b64_string: str, filename: str) -> None:
+    """Helper to quickly drop MP3 files for debugging."""
+    audio_bytes = base64.b64decode(b64_string)
+    AudioSegment.from_file(BytesIO(audio_bytes), format="mp3").export(filename, format="mp3")

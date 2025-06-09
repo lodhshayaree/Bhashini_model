@@ -1,142 +1,151 @@
 import streamlit as st
+
 from bhashini_api import (
-    bhashini_tts, 
-    bhashini_nmt, 
-    bhashini_asr, 
-    bhashini_asr_nmt_tts_pipeline, 
-    bhashini_asr_nmt
+    bhashini_tts,
+    bhashini_nmt_tts,
+    bhashini_asr,
+    bhashini_nmt,
+    bhashini_asr_nmt,
+    bhashini_asr_nmt_tts,
 )
-from utils import play_audio_from_base64, recognize_speech_and_encode
-from language_utils import LANG_CODE_TO_NAME, NAME_TO_LANG_CODE
+from utils import recognize_speech_and_encode, play_audio_from_base64
+from language_utils import LANG_CODE_TO_NAME
 
-# App Configuration
+# ──────────────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Bhashini Assistant", layout="centered")
-st.title("🇮🇳 Bhashini Multilingual Voice Assistant")
+st.title("🇮🇳  Bhashini Multilingual Voice Assistant")
 
-# Custom CSS
 with open("custom_streamlit_style.css") as f:
     st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
-# --- Task Selector ---
-option = st.selectbox("Choose a Task", [
-    "Text to Speech",
-    "Speech to Text",
-    "Text to Text Translation",
-    "Speech to Text Translation",
-    "Speech to Speech Translation"
-])
+TASK = st.selectbox(
+    "Choose a Task",
+    [
+        "Text to Speech",                # TTS
+        "Text to Speech Translation",    # NMT + TTS
+        "Speech to Text",                # ASR
+        "Text to Text Translation",      # NMT
+        "Speech to Text Translation",    # ASR + NMT
+        "Speech to Speech Translation",  # ASR + NMT + TTS
+    ],
+)
 
-# --- Text to Speech ---
-if option == "Text to Speech":
-    st.subheader("🗣️ Text to Speech")
-    text = st.text_input("Enter Text to Convert", "नमस्ते, आप कैसे हैं?")
-    lang = st.text_input("Language Code (e.g., en, hi, ta)", "hi")
-    gender = st.selectbox("Select Voice Gender", ["male", "female"])
+# ──────────────────────────────────────────────────────────────────────────────
+# 1) TEXT ➜ SPEECH  (same language)
+# ──────────────────────────────────────────────────────────────────────────────
+if TASK == "Text to Speech":
+    st.subheader("🗣️  Text → Speech (same language)")
 
-    if st.button("🔊 Convert and Play"):
-        if text:
+    txt   = st.text_input("Text", "नमस्ते, आप कैसे हैं?")
+    lang  = st.text_input("Language code (e.g. hi, en, ta)", "hi")
+    voice = st.radio("Voice gender", ["female"], horizontal=True)
+
+    if st.button("🔊 Speak"):
+        try:
+            audio_b64 = bhashini_tts(txt, lang, gender=voice)
+            audio_bytes = base64.b64decode(audio_b64)
+            st.audio(audio_bytes, format="audio/mp3")   # browser‑native playback
+            play_audio_from_base64(audio_b64)  # ✅ Hear from system speaker also
+
+        except Exception as err:
+            st.error(f"TTS failed: {err}")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 2) TEXT ➜ SPEECH (translate)
+# ──────────────────────────────────────────────────────────────────────────────
+elif TASK == "Text to Speech Translation":
+    st.subheader("🔤🗣️  Text → Speech (translate)")
+
+    src_txt = st.text_input("Source text", "Hello, how are you?")
+    col1, col2 = st.columns(2)
+    with col1:
+        src_lang = st.text_input("Source lang", "en")
+    with col2:
+        tgt_lang = st.text_input("Target lang", "hi")
+
+    if st.button("🌐 Translate & Speak"):
+        try:
+            audio_b64 = bhashini_nmt_tts(src_txt, src_lang, tgt_lang)
+            play_audio_from_base64(audio_b64)
+        except Exception as err:
+            st.error(f"NMT+TTS failed: {err}")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 3) SPEECH ➜ TEXT
+# ──────────────────────────────────────────────────────────────────────────────
+elif TASK == "Speech to Text":
+    st.subheader("🎙️  Speech → Text")
+    lang     = st.text_input("Speech language code", "en")
+    duration = st.slider("Record seconds", 1, 10, 5)
+
+    if st.button("🎤 Record"):
+        audio_b64 = recognize_speech_and_encode(lang, duration)
+        if audio_b64:
             try:
-                audio_base64 = bhashini_tts(text, lang, gender=gender)
-                if audio_base64:
-                    st.success(f"Playing voice in {lang.upper()} ({gender}) for: \"{text}\"")
-                    play_audio_from_base64(audio_base64)
-                else:
-                    st.error("❌ No audio returned from TTS API.")
-            except Exception as e:
-                st.error(f"TTS Error: {e}")
-        else:
-            st.warning("⚠️ Please enter some text.")
+                text = bhashini_asr(audio_b64, lang)
+                st.success(text)
+            except Exception as err:
+                st.error(f"ASR failed: {err}")
 
-# --- Speech to Text (ASR) ---
-elif option == "Speech to Text":
-    st.subheader("🎙️ Speech to Text")
-    lang = st.text_input("Speech Language Code (e.g., en, hi)", "en")
-    duration = st.slider("Recording Duration (seconds)", 1, 10, 5)
+# ──────────────────────────────────────────────────────────────────────────────
+# 4) TEXT ➜ TEXT
+# ──────────────────────────────────────────────────────────────────────────────
+elif TASK == "Text to Text Translation":
+    st.subheader("🔤  Text → Text")
+    col1, col2 = st.columns(2)
+    with col1:
+        src_lang = st.text_input("Source lang", "en")
+    with col2:
+        tgt_lang = st.text_input("Target lang", "hi")
+    src_txt = st.text_area("Source text", "Hello, how are you?")
 
-    if st.button("🎤 Record and Transcribe"):
-        st.info("Listening...")
-        audio_base64 = recognize_speech_and_encode(lang, duration)
+    if st.button("🌐 Translate"):
+        try:
+            st.success(bhashini_nmt(src_txt, src_lang, tgt_lang))
+        except Exception as err:
+            st.error(f"NMT failed: {err}")
 
-        if audio_base64:
-            st.success("Audio captured. Transcribing...")
+# ──────────────────────────────────────────────────────────────────────────────
+# 5) SPEECH ➜ TEXT (translate)
+# ──────────────────────────────────────────────────────────────────────────────
+elif TASK == "Speech to Text Translation":
+    st.subheader("🎙️📝  Speech → Text (translate)")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        src_lang = st.text_input("Speech lang", "en")
+    with col2:
+        tgt_lang = st.text_input("Target text lang", "hi")
+    duration = st.slider("Record seconds", 1, 10, 5)
+
+    if st.button("🎤 Record & Translate"):
+        audio_b64 = recognize_speech_and_encode(src_lang, duration)
+        if audio_b64:
             try:
-                result = bhashini_asr(audio_base64, source_language=lang)
-                st.success(f"📝 Transcribed Text: {result}")
-            except Exception as e:
-                st.error(f"ASR Error: {e}")
-        else:
-            st.warning("⚠️ No speech detected or recording failed.")
+                trans_txt = bhashini_asr_nmt(audio_b64, src_lang, tgt_lang)
+                st.success(trans_txt)
+            except Exception as err:
+                st.error(f"ASR+NMT failed: {err}")
 
-# --- Text to Text Translation ---
-elif option == "Text to Text Translation":
-    st.subheader("🔤 Text to Text Translation")
-    src_text = st.text_input("Source Text", "Hello, how are you?")
-    src_lang = st.text_input("Source Language Code (e.g., en, hi)", "en")
-    tgt_lang = st.text_input("Target Language Code (e.g., hi, ta)", "hi")
+# ──────────────────────────────────────────────────────────────────────────────
+# 6) SPEECH ➜ SPEECH
+# ──────────────────────────────────────────────────────────────────────────────
+elif TASK == "Speech to Speech Translation":
+    st.subheader("🗣️🗣️  Speech → Speech")
 
-    if st.button("🌐 Translate Text"):
-        if src_text:
+    src_lang = "hi"   # ASR model is Hindi‑only on Dhruva
+    tgt_lang = st.selectbox(
+        "Target language",
+        [code for code in LANG_CODE_TO_NAME if code != "hi"],
+        index=list(LANG_CODE_TO_NAME).index("en"),
+    )
+    duration = st.slider("Record seconds", 1, 10, 5)
+
+    if st.button("🎤 Record & Speak"):
+        audio_b64 = recognize_speech_and_encode(src_lang, duration)
+        if audio_b64:
             try:
-                translated = bhashini_nmt(src_text, src_lang, tgt_lang)
-                st.success(f"🌍 Translated Text: {translated}")
-            except Exception as e:
-                st.error(f"Translation Error: {e}")
-        else:
-            st.warning("⚠️ Enter text to translate.")
-
-# --- Speech to Text Translation (ASR + NMT) ---
-elif option == "Speech to Text Translation":
-    st.subheader("🗣️➡️📝 Speech to Text Translation")
-    src_lang = st.text_input("Speech Language Code", "en")
-    tgt_lang = st.text_input("Target Language Code", "hi")
-    duration = st.slider("Recording Duration (seconds)", 1, 10, 5)
-
-    if st.button("🎤 Record and Translate"):
-        st.info("Listening...")
-        audio_base64 = recognize_speech_and_encode(src_lang, duration)
-
-        if audio_base64:
-            st.success("Audio captured. Processing ASR ➝ NMT...")
-            try:
-                translated_text = bhashini_asr_nmt(audio_base64, source_language_asr=src_lang, target_language_nmt=tgt_lang)
-
-                st.success(f"🌍 Translated Text: {translated_text}")
-            except Exception as e:
-                st.error(f"Speech ➝ Text Translation Error: {e}")
-        else:
-            st.warning("⚠️ No audio recorded or error during recognition.")
-
-# --- Speech to Speech Translation (ASR + NMT + TTS) ---
-elif option == "Speech to Speech Translation":
-    st.subheader("🗣️➡️🗣️ Speech to Speech Translation")
-
-    src_lang = "hi"  # ASR supports only Hindi currently
-
-    from language_utils import LANG_CODE_TO_NAME
-    target_language_options = [code for code in LANG_CODE_TO_NAME.keys() if code != "hi"]
-    tgt_lang = st.selectbox("Target Language Code (TTS output)", target_language_options, index=target_language_options.index("en"))
-
-    duration = st.slider("Recording Duration (seconds)", 1, 10, 5)
-
-    if st.button("🎤 Translate and Speak"):
-        st.info("🎙 Listening in Hindi...")
-        audio_base64 = recognize_speech_and_encode(language='hi', duration=duration)
-
-        if audio_base64:
-            st.success("🎧 Audio captured. Running ASR ➝ NMT ➝ TTS pipeline...")
-            try:
-                output_audio_base64 = bhashini_asr_nmt_tts_pipeline(
-                    audio_base64_string=audio_base64,
-                    source_language_asr=src_lang,
-                    target_language_nmt_tts=tgt_lang
-                )
-
-                if output_audio_base64:
-                    st.success(f"🔊 Playing translated speech in {tgt_lang.upper()} ({LANG_CODE_TO_NAME[tgt_lang]})")
-                    play_audio_from_base64(output_audio_base64)
-                else:
-                    st.error("❌ No audio received from pipeline.")
-            except Exception as e:
-                st.error(f"Speech ➝ Speech Translation Error: {e}")
-        else:
-            st.warning("⚠️ Recording failed or no speech detected.")
+                tts_b64 = bhashini_asr_nmt_tts(audio_b64, src_lang, tgt_lang)
+                play_audio_from_base64(tts_b64)
+            except Exception as err:
+                st.error(f"ASR+NMT+TTS failed: {err}")
